@@ -89,6 +89,16 @@ function createApp({ db, config }) {
   const api = express.Router();
   api.use(limiters.api);
   api.use(express.json({ limit: '48kb' }));
+  // When PUBLIC_ORIGIN is empty (Vercel dynamic URLs), derive it from the request host
+  api.use((req, res, next) => {
+    if (!config.PUBLIC_ORIGIN && !req._originResolved) {
+      req._originResolved = true;
+      const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+      const proto = req.headers['x-forwarded-proto'] || 'https';
+      req._derivedOrigin = host ? `${proto}://${host.split(',')[0].trim()}` : '';
+    }
+    next();
+  });
   api.use(createSameOriginGuard(config.PUBLIC_ORIGIN));
   api.use(auth.loadSession);
   api.use((_req, res, next) => {
@@ -119,8 +129,8 @@ function createApp({ db, config }) {
   api.use(bookingRoutes({ services, auth, requireHuman, limiters, audit }));
   api.use((_req, res) => res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } }));
   app.use('/api', api);
-  // Also mount directly to support serverless environments where /api is stripped by routing
-  app.use(api);
+  // Also mount at root: Vercel strips /api prefix, so the handler gets /auth/..., /config, etc.
+  app.use('/', api);
 
   const staticOpts = { extensions: ['html'], maxAge: config.IS_PROD ? '1h' : 0, dotfiles: 'deny', index: ['index.html'] };
   app.use('/vendor/lenis', express.static(path.join(ROOT, 'node_modules', 'lenis', 'dist'), { maxAge: '7d', dotfiles: 'deny' }));

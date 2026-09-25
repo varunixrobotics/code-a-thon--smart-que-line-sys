@@ -19,10 +19,19 @@ function createSameOriginGuard(publicOrigin) {
       throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Requests must be JSON.');
     }
     const origin = req.headers.origin;
+    // The effective origin to match against: explicit env var > request-derived (Vercel) > null
+    const effectiveOrigin = publicOrigin || req._derivedOrigin || null;
     if (origin) {
       let allowed = false;
       try {
-        allowed = publicOrigin ? origin === publicOrigin : new URL(origin).host === req.headers.host;
+        if (effectiveOrigin) {
+          allowed = origin === effectiveOrigin;
+        } else {
+          // Fallback: compare parsed host headers
+          const originHost = new URL(origin).host;
+          const reqHost = (req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+          allowed = originHost === reqHost;
+        }
       } catch {
         allowed = false;
       }
@@ -44,8 +53,11 @@ function createCorsGuard(publicOrigin) {
     try {
       if (publicOrigin) {
         allowed = origin === publicOrigin;
-      } else if (req.headers.host) {
-        allowed = new URL(origin).host === req.headers.host;
+      } else {
+        // When no PUBLIC_ORIGIN set (Vercel dynamic URLs), compare origin host to request host
+        const originHost = new URL(origin).host;
+        const reqHost = (req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+        allowed = originHost === reqHost;
       }
     } catch {
       allowed = false;
