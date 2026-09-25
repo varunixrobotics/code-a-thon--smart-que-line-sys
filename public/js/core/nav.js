@@ -3,6 +3,7 @@ import { mountThemeSwitcher } from './theme.js';
 import { api, post } from './api.js';
 import { $, esc, icon, toast } from './ui.js';
 import { initMagnetic } from './motion.js';
+import { supabase } from '/src/supabaseclient.js';
 
 const initials = (name) => name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
 
@@ -22,13 +23,34 @@ function renderAuthSlot(slot, me) {
     <button type="button" class="btn btn-ghost btn-icon" data-logout aria-label="Sign out" title="Sign out">${icon('logout')}</button>`;
   $('[data-logout]', slot).addEventListener('click', async () => {
     try {
-      await post('/api/auth/logout');
+      await Promise.allSettled([
+        post('/api/auth/logout'),
+        supabase.auth.signOut(),
+      ]);
     } catch (err) {
       toast('Sign-out failed', { body: err.message, type: 'danger' });
       return;
     }
     location.href = '/';
   });
+}
+
+/**
+ * Ensures user has an active Supabase session; if not, redirects to /login.
+ * @returns {Promise<object|null>} the session or null
+ */
+export async function requireAuthSession() {
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session) {
+      window.location.href = '/login';
+      return null;
+    }
+    return data.session;
+  } catch {
+    window.location.href = '/login';
+    return null;
+  }
 }
 
 /**
@@ -50,19 +72,40 @@ export async function initNav({ requireAuth = false } = {}) {
     toggle.setAttribute('aria-expanded', String(open));
   });
 
+  if (requireAuth) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (!data?.session) {
+        window.location.href = '/login';
+        return new Promise(() => {});
+      }
+      if (data.session.access_token) {
+        try {
+          await post('/api/auth/supabase', { accessToken: data.session.access_token }, { human: true });
+        } catch (syncErr) {
+          console.warn('[nav supabase backend sync]', syncErr);
+        }
+      }
+    } catch (err) {
+      console.warn('[nav getSession error]', err);
+      window.location.href = '/login';
+      return new Promise(() => {});
+    }
+  }
+
   let me = null;
   try {
     const res = await api('/api/auth/me');
     me = res.user?.verified ? res.user : null;
     if (requireAuth && res.user && !res.user.verified) {
-      location.href = `/login.html?resume=1&next=${encodeURIComponent(location.pathname)}`;
+      window.location.href = '/login';
       return new Promise(() => {});
     }
   } catch {
     me = null;
   }
   if (requireAuth && !me) {
-    location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search)}`;
+    window.location.href = '/login';
     return new Promise(() => {});
   }
   renderAuthSlot($('[data-auth-slot]'), me);

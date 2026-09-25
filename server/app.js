@@ -133,6 +133,7 @@ function createApp({ db, config }) {
   const staticOpts = { extensions: ['html'], maxAge: config.IS_PROD ? '1h' : 0, dotfiles: 'deny', index: ['index.html'] };
   app.use('/vendor/lenis', express.static(path.join(ROOT, 'node_modules', 'lenis', 'dist'), { maxAge: '7d', dotfiles: 'deny' }));
   app.get('/shared/botScore.js', (_req, res) => res.sendFile(path.join(__dirname, 'lib', 'botScore.js')));
+  app.use('/src', express.static(path.join(ROOT, 'src')));
   app.use(express.static(path.join(ROOT, 'public'), staticOpts));
   app.use((_req, res) => res.status(404).sendFile(path.join(ROOT, 'public', '404.html')));
   app.use(errorHandler);

@@ -9,6 +9,7 @@ import {
 import {
   renderSlotGrid, renderDateStrip, renderTokenList, renderHistory, updateLocationPanel, createLocationTracker, openReschedule,
 } from './app-tokens.js';
+import { supabase } from '/src/supabaseclient.js';
 
 const BOOK_DAYS = 14;
 const REFRESH_MS = 30_000;
@@ -489,6 +490,16 @@ function greet(me) {
 }
 
 async function boot() {
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session) {
+      window.location.href = '/login';
+      return;
+    }
+  } catch {
+    window.location.href = '/login';
+    return;
+  }
   state.me = await initNav({ requireAuth: true });
   greet(state.me);
   initAnchorLinks();

@@ -6,6 +6,7 @@ import { connectLive, renderLiveStatus } from '../core/live.js';
 import {
   $, $$, esc, icon, fmt, CATEGORY, STATUS, toast, stateHTML, renderError, skeletons, debounce, setBusy, animateNumber,
 } from '../core/ui.js';
+import { supabase } from '/src/supabaseclient.js';
 
 const ORG_KEY = 'sq-admin-org';
 const STATUS_COLORS = {
@@ -372,6 +373,16 @@ function showDenied() {
 }
 
 async function boot() {
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session) {
+      window.location.href = '/login';
+      return;
+    }
+  } catch {
+    window.location.href = '/login';
+    return;
+  }
   state.me = await initNav({ requireAuth: true });
   initAnchorLinks();
   if (state.me.role !== 'admin' && state.me.role !== 'staff') return showDenied();

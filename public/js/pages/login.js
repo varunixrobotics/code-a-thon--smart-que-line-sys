@@ -3,6 +3,7 @@ import { api, post } from '../core/api.js';
 import { initTilt, initMagnetic, initHover3D } from '../core/motion.js';
 import { initParticleDrift } from '../core/particle-drift.js';
 import { $, $$, setBusy, toast } from '../core/ui.js';
+import { supabase } from '/src/supabaseclient.js';
 
 const GSI_SRC = 'https://accounts.google.com/gsi/client';
 const params = new URLSearchParams(location.search);
@@ -34,10 +35,21 @@ function showStep(step) {
   setTimeout(() => input?.focus(), 60);
 }
 
-function showError(form, message) {
+function showError(form, message, isInfo = false) {
   const el = $('[data-error]', form);
-  el.textContent = message || '';
-  el.hidden = !message;
+  if (el) {
+    el.textContent = message || '';
+    el.hidden = !message;
+    if (isInfo) {
+      el.style.color = 'var(--text-strong, #0f172a)';
+      el.style.backgroundColor = 'var(--accent-soft, rgba(0, 135, 90, 0.15))';
+      el.style.borderColor = 'var(--accent, #00875a)';
+    } else {
+      el.style.color = '';
+      el.style.backgroundColor = '';
+      el.style.borderColor = '';
+    }
+  }
 }
 
 async function handleNext(result) {
@@ -95,26 +107,32 @@ function bindCredentialForms() {
   const login = $('[data-form="login"]');
   login.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const { email, password, website } = formData(login);
+    const { email, password } = formData(login);
     if (!email || !password) return showError(login, 'Enter your email and password.');
     const btn = $('button[type=submit]', login);
     setBusy(btn, true, 'Signing in…');
     showError(login, '');
     try {
-      if (window.supabaseClient) {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        showError(login, error.message);
+        return;
+      }
+      // Only redirect when a real session exists after
+      if (!data?.session) {
+        showError(login, 'Check your email and confirm your account before logging in.');
+        return;
+      }
+      if (data.session.access_token) {
         try {
-          const { data, error } = await window.supabaseClient.auth.signInWithPassword({ email, password });
-          if (!error && data?.session?.access_token) {
-            await handleNext(await post('/api/auth/supabase', { accessToken: data.session.access_token }, { human: true }));
-            return;
-          }
-        } catch {
-          // If Supabase sign in fails, fall back to backend local login
+          await post('/api/auth/supabase', { accessToken: data.session.access_token }, { human: true });
+        } catch (syncErr) {
+          console.warn('[login backend sync]', syncErr);
         }
       }
-      await handleNext(await post('/api/auth/login', { email, password, website }, { human: true }));
+      window.location.href = '/';
     } catch (err) {
-      showError(login, err.message);
+      showError(login, err.message || 'Failed to sign in.');
     } finally {
       setBusy(btn, false);
     }
@@ -122,37 +140,43 @@ function bindCredentialForms() {
 
   const register = $('[data-form="register"]');
   const pass = $('#re-pass');
-  pass.addEventListener('input', () => {
-    const s = strength(pass.value);
-    $('[data-strength]').dataset.level = String(s);
-    $('[data-strength-label]').textContent = pass.value ? STRENGTH_LABELS[s] : 'At least 10 characters. A short phrase works well.';
-  });
+  if (pass) {
+    pass.addEventListener('input', () => {
+      const s = strength(pass.value);
+      $('[data-strength]').dataset.level = String(s);
+      $('[data-strength-label]').textContent = pass.value ? STRENGTH_LABELS[s] : 'At least 10 characters. A short phrase works well.';
+    });
+  }
   register.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const { name, email, password, website } = formData(register);
-    if (!name || name.trim().length < 2) return showError(register, 'Please enter your name.');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return showError(register, 'Enter a valid email address.');
-    if ((password || '').length < 10) return showError(register, 'Password must be at least 10 characters.');
+    const { email, password } = formData(register);
+    if (!email || !password) return showError(register, 'Please enter email and password.');
     const btn = $('button[type=submit]', register);
-    setBusy(btn, true, 'Creating…');
+    setBusy(btn, true, 'Creating account…');
     showError(register, '');
     try {
-      // First try backend registration with email OTP
-      try {
-        await handleNext(await post('/api/auth/register', { name: name.trim(), email, password, website }, { human: true }));
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        showError(register, error.message);
         return;
-      } catch (backendErr) {
-        if (window.supabaseClient && (backendErr.code === 'BAD_REQUEST' || backendErr.status === 400)) {
-          const { data, error } = await window.supabaseClient.auth.signUp({ email, password, options: { data: { full_name: name.trim() } } });
-          if (error) throw new Error(error.message);
-          toast('Account created! Check your email to confirm, then sign in.', { type: 'success', timeout: 10000 });
-          setTab('login');
-          return;
-        }
-        throw backendErr;
       }
+      // -after signup(), if the data.session is null, don't redirect to the dashboard
+      // -just show:"Check your email and confirm your account before logging in."
+      if (!data?.session) {
+        showError(register, 'Check your email and confirm your account before logging in.', true);
+        return;
+      }
+      // -only redirect when a real session exists after
+      if (data.session.access_token) {
+        try {
+          await post('/api/auth/supabase', { accessToken: data.session.access_token }, { human: true });
+        } catch (syncErr) {
+          console.warn('[signup backend sync]', syncErr);
+        }
+      }
+      window.location.href = '/';
     } catch (err) {
-      showError(register, err.message);
+      showError(register, err.message || 'Failed to sign up.');
     } finally {
       setBusy(btn, false);
     }
@@ -427,7 +451,7 @@ async function boot() {
 
   if (supabaseUrl && supabaseAnonKey && window.supabase) {
     try {
-      window.supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
+      window.supabaseClient = supabase || window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
           flowType: 'pkce',
           detectSessionInUrl: true,
