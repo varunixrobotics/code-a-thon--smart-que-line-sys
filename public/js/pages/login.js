@@ -417,8 +417,10 @@ async function boot() {
     try {
       window.supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
 
+      let syncing = false;
       async function syncSupabaseUser(session) {
-        if (!session?.access_token) return;
+        if (!session?.access_token || syncing) return;
+        syncing = true;
         try {
           const res = await post('/api/auth/supabase', { accessToken: session.access_token }, { human: true });
           if (window.history?.replaceState) {
@@ -428,6 +430,8 @@ async function boot() {
         } catch (err) {
           console.warn('[supabase sync error]', err);
           toast('Supabase sign-in sync error', { body: err.message, type: 'danger' });
+        } finally {
+          syncing = false;
         }
       }
 

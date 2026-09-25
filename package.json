@@ -23,7 +23,7 @@
   },
   "private": true,
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "devDependencies": {
     "prisma": "^8.0.0-rc.17"

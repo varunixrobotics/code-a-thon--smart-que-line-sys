@@ -16,37 +16,43 @@ const { createApp } = require('../server/app');
 const { seedOrganisations, ensureSystemUser } = require('../server/seed');
 
 let appInstance = null;
-let initError = null;
 
 function getVercelOrigin(req) {
-  // Reconstruct origin from Host header (Vercel provides x-forwarded-host or host)
   const host = req.headers['x-forwarded-host'] || req.headers.host || '';
   const proto = req.headers['x-forwarded-proto'] || 'https';
   return host ? `${proto}://${host.split(',')[0].trim()}` : '';
 }
 
 function getApp(req) {
-  if (initError) throw initError;
   if (appInstance) return appInstance;
 
+  const dbPath = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+    ? '/tmp/queue.db'
+    : (config.DB_FILE || ':memory:');
+
+  const db = openDb(dbPath);
+
   try {
-    const db = openDb(config.DB_FILE);
     seedOrganisations(db);
-    ensureSystemUser(db);
-
-    // Derive PUBLIC_ORIGIN from the first real request if not explicitly set via env
-    const origin = config.PUBLIC_ORIGIN || getVercelOrigin(req);
-
-    const { app } = createApp({
-      db,
-      config: Object.freeze({ ...config, PUBLIC_ORIGIN: origin }),
-    });
-    appInstance = app;
-    return app;
-  } catch (err) {
-    initError = err;
-    throw err;
+  } catch (seedErr) {
+    console.warn('[seed] seedOrganisations non-fatal error:', seedErr.message);
   }
+
+  try {
+    ensureSystemUser(db);
+  } catch (userErr) {
+    console.warn('[seed] ensureSystemUser non-fatal error:', userErr.message);
+  }
+
+  const origin = config.PUBLIC_ORIGIN || getVercelOrigin(req);
+
+  const { app } = createApp({
+    db,
+    config: Object.freeze({ ...config, PUBLIC_ORIGIN: origin }),
+  });
+
+  appInstance = app;
+  return app;
 }
 
 module.exports = (req, res) => {
@@ -64,7 +70,7 @@ module.exports = (req, res) => {
       data: null,
       error: {
         code: 'SERVICE_UNAVAILABLE',
-        message: 'The server is temporarily unavailable. Please try again shortly.',
+        message: `The server is temporarily unavailable: ${err.message || 'initialization error'}`,
       },
     });
   }

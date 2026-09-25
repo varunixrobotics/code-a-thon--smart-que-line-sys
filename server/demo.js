@@ -18,14 +18,21 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
  * (so you receive the "your turn" notification) but are only completed by staff.
  */
 function startDemoSimulator({ db, services, systemUserId }) {
+  function getDemoVisitorId() {
+    const email = `walkin_${Date.now()}_${Math.floor(Math.random() * 100000)}@system.invalid`;
+    return Number(stmt(db, "INSERT INTO users (email, name, role, created_at) VALUES (?,'Walk-in visitor','system',?)")
+      .run(email, Date.now()).lastInsertRowid);
+  }
+
   const tick = () => {
     const now = Date.now();
     for (const org of services.stats.listOrgs(now)) {
       if (!org.openNow) continue;
       try {
         if (org.waiting < MAX_DEMO_WAITING && Math.random() < ARRIVAL_PROBABILITY) {
+          const visitorId = getDemoVisitorId();
           services.bookings.create({
-            userId: systemUserId,
+            userId: visitorId,
             serviceId: pick(org.services).id,
             kind: 'walkin',
             now,
@@ -42,13 +49,15 @@ function startDemoSimulator({ db, services, systemUserId }) {
 
   function advanceCounters(orgId, now) {
     const counters = stmt(db,
-      `SELECT c.id, c.status, b.user_id, b.called_at FROM counters c
-       LEFT JOIN bookings b ON b.id=c.current_booking_id AND b.status='called' WHERE c.org_id=?`).all(orgId);
+      `SELECT c.id, c.status, b.user_id, u.role, b.called_at FROM counters c
+       LEFT JOIN bookings b ON b.id=c.current_booking_id AND b.status='called'
+       LEFT JOIN users u ON u.id=b.user_id
+       WHERE c.org_id=?`).all(orgId);
     for (const c of counters) {
       if (c.status !== 'open') continue;
       if (c.called_at === null) {
         services.counters.callNext({ orgId, counterId: c.id, now });
-      } else if (c.user_id === systemUserId && now - c.called_at > MIN_DEMO_SERVICE_MS + Math.random() * DEMO_SERVICE_JITTER_MS) {
+      } else if (c.role === 'system' && now - c.called_at > MIN_DEMO_SERVICE_MS + Math.random() * DEMO_SERVICE_JITTER_MS) {
         services.counters.complete({ orgId, counterId: c.id, now });
       }
     }
