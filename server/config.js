@@ -40,6 +40,10 @@ module.exports = Object.freeze({
   ADMIN_EMAIL: (process.env.ADMIN_EMAIL || '').trim(),
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
   TRUST_PROXY: process.env.TRUST_PROXY === '1',
+  SUPABASE_URL: (process.env.SUPABASE_URL || '').trim(),
+  SUPABASE_PUBLISHABLE_KEY: (process.env.SUPABASE_PUBLISHABLE_KEY || '').trim(),
+  SUPABASE_SECRET_KEY: (process.env.SUPABASE_SECRET_KEY || '').trim(),
+  SUPABASE_JWKS_URL: (process.env.SUPABASE_JWKS_URL || '').trim(),
   PUBLIC_ORIGIN: (process.env.PUBLIC_ORIGIN || '').trim().replace(/\/$/, ''),
   DEMO_MODE: process.env.DEMO_MODE ? process.env.DEMO_MODE === '1' : !IS_PROD,
 });

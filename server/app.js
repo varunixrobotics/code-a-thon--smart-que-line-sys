@@ -102,7 +102,14 @@ function createApp({ db, config }) {
     isTest: Boolean(config.APP_SECRET && config.APP_SECRET.startsWith('test-secret-')),
   }));
   api.use('/admin', adminRoutes({ db, services, auth, audit }));
-  api.use(publicRoutes({ services, events, googleClientId: config.GOOGLE_CLIENT_ID, demoMode: config.DEMO_MODE }));
+  api.use(publicRoutes({ 
+    services, 
+    events, 
+    googleClientId: config.GOOGLE_CLIENT_ID, 
+    supabaseUrl: config.SUPABASE_URL,
+    supabasePublishableKey: config.SUPABASE_PUBLISHABLE_KEY,
+    demoMode: config.DEMO_MODE 
+  }));
   api.use(bookingRoutes({ services, auth, requireHuman, limiters, audit }));
   api.use((_req, res) => res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } }));
   app.use('/api', api);

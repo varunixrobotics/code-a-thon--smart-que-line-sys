@@ -24,6 +24,7 @@ const registerSchema = z.object({
 const loginSchema = z.object({ email, password: z.string().min(1).max(128) });
 const googleSchema = z.object({ credential: z.string().min(20).max(4096) });
 const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit verification code.') });
+const supabaseSchema = z.object({ accessToken: z.string().min(1) });
 
 const TRUSTED_DOMAINS = new Set([
   'gmail.com',
@@ -72,6 +73,7 @@ function nextStep(user, viaGoogle) {
 
 function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleClientId, isTest = false }) {
   const r = express.Router();
+  const { verifyCredentials, EnvError } = require('@supabase/server/core');
   const q = (sql) => stmt(db, sql);
   const google = googleClientId ? new OAuth2Client() : null;
   const getUser = (id) => q('SELECT * FROM users WHERE id=?').get(id);
@@ -177,6 +179,39 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
     begin(req, res, getUser(user.id), true);
   });
 
+  r.post('/supabase', limiters.auth, requireHuman('login'), async (req, res) => {
+    const { accessToken } = parse(supabaseSchema, req.body);
+    
+    let authResult;
+    try {
+      const result = await verifyCredentials({ token: accessToken, apikey: null }, { auth: 'user' });
+      if (result.error) throw result.error;
+      authResult = result.data;
+    } catch (err) {
+      if (err instanceof EnvError) throw errors.notFound('Supabase auth is not configured on this server.');
+      throw errors.unauthorized('Invalid Supabase token.', 'BAD_TOKEN');
+    }
+    
+    if (!authResult?.userClaims?.email) throw errors.unauthorized('Your Supabase account lacks an email.');
+
+    const email = authResult.userClaims.email.toLowerCase();
+    let user = q('SELECT * FROM users WHERE email=?').get(email);
+    if (user?.role === 'system') throw errors.forbidden();
+    if (!user) {
+      // Create local user mapping
+      const name = (authResult.userClaims.user_metadata?.full_name || email.split('@')[0]).slice(0, 60);
+      const id = q('INSERT INTO users (email, name, created_at) VALUES (?,?,?)')
+        .run(email, name, Date.now()).lastInsertRowid;
+      user = getUser(Number(id));
+      audit(req, 'register_supabase', maskEmail(email), user.id);
+    }
+    
+    // Create full authenticated session without 2FA (Supabase handled it)
+    audit(req, 'login_supabase', null, user.id);
+    auth.startSession(req, res, user.id, true, Date.now());
+    res.json(ok({ next: 'done', user: auth.publicUser(getUser(user.id), true) }));
+  });
+
   r.post('/totp/setup', limiters.totp, auth.requirePending, async (req, res) => {
     const user = getUser(req.auth.user.id);
     if (user.totp_enabled) throw errors.conflict('Your authenticator app is already set up.');
@@ -245,12 +280,12 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
     }));
   });
 
-  r.post('/logout', (req, res) => {
+  r.post('/logout',  async (req, res) => {
     auth.endSession(req, res);
     res.json(ok({}));
   });
 
-  r.get('/me', (req, res) => {
+  r.get('/me',  async (req, res) => {
     if (!req.auth) return res.json(ok({ user: null, pending: null }));
     const { user, mfaOk } = req.auth;
     const hasOtp = emailOtps.has(user.id);
