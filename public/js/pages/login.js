@@ -278,7 +278,7 @@ async function initGoogle(clientId) {
         const { error } = await window.supabaseClient.auth.signInWithOAuth({
           provider: 'google',
           options: {
-            redirectTo: window.location.origin + '/login.html',
+            redirectTo: window.location.origin + '/login.html' + (params.get('next') ? `?next=${encodeURIComponent(params.get('next'))}` : ''),
             queryParams: { access_type: 'offline', prompt: 'select_account' },
           },
         });
@@ -390,6 +390,20 @@ async function boot() {
     }
   });
 
+  // Surface any OAuth redirect errors from Google / Supabase
+  const urlSearch = new URLSearchParams(window.location.search);
+  const hashSearch = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const oauthErr = urlSearch.get('error_description') || urlSearch.get('error') || hashSearch.get('error_description') || hashSearch.get('error');
+  if (oauthErr) {
+    const cleanErr = decodeURIComponent(oauthErr.replace(/\+/g, ' '));
+    toast('Google sign-in notice: ' + cleanErr, { type: 'danger', timeout: 12000 });
+  }
+
+  const hasOAuthCallback = window.location.hash.includes('access_token') || window.location.search.includes('code=');
+  if (hasOAuthCallback) {
+    setBusy($('[data-form="login"] button[type="submit"]') || document.body, true, 'Signing you in…');
+  }
+
   try {
     const me = await api('/api/auth/me');
     if (me.user?.verified) return finish(me.user);
@@ -421,10 +435,12 @@ async function boot() {
       async function syncSupabaseUser(session) {
         if (!session?.access_token || syncing) return;
         syncing = true;
+        setBusy($('[data-form="login"] button[type="submit"]') || document.body, true, 'Signing you in…');
         try {
-          const res = await post('/api/auth/supabase', { accessToken: session.access_token }, { human: true });
+          const res = await post('/api/auth/supabase', { accessToken: session.access_token });
           if (window.history?.replaceState) {
-            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+            const nextQuery = urlSearch.get('next') ? `?next=${encodeURIComponent(urlSearch.get('next'))}` : '';
+            window.history.replaceState(null, '', window.location.pathname + nextQuery);
           }
           await handleNext(res);
         } catch (err) {
@@ -432,11 +448,12 @@ async function boot() {
           toast('Supabase sign-in sync error', { body: err.message, type: 'danger' });
         } finally {
           syncing = false;
+          setBusy($('[data-form="login"] button[type="submit"]') || document.body, false);
         }
       }
 
       window.supabaseClient.auth.onAuthStateChange(async (event, session) => {
-        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.access_token) {
+        if (session?.access_token) {
           await syncSupabaseUser(session);
         }
       });

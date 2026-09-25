@@ -66,7 +66,7 @@ function createApp({ db, config }) {
   const secure = config.IS_PROD;
   const events = createEventHub();
   const services = createServices({ db, events });
-  const auth = createAuth({ db, secure });
+  const auth = createAuth({ db, secure, appSecret: config.APP_SECRET });
   const gate = createHumanGate({
     signer: createSigner(config.APP_SECRET),
     passTtlMs: P.HUMAN_PASS_TTL_MS,

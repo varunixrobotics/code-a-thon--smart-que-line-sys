@@ -190,7 +190,7 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
     begin(req, res, getUser(user.id), true);
   });
 
-  r.post('/supabase', limiters.auth, requireHuman('login'), async (req, res) => {
+  r.post('/supabase', limiters.auth, async (req, res) => {
     const { accessToken } = parse(supabaseSchema, req.body);
     
     let claims = null;
