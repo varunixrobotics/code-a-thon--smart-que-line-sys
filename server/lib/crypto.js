@@ -35,6 +35,11 @@ async function verifyPassword(password, stored) {
 }
 
 const randomToken = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
+const randomDigits = (digits = 6) => {
+  const min = 10 ** (digits - 1);
+  const max = 10 ** digits;
+  return String(crypto.randomInt(min, max));
+};
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 /** AES-256-GCM sealing for secrets at rest (TOTP seeds). */
@@ -71,4 +76,4 @@ function createSigner(appSecret) {
   });
 }
 
-module.exports = { hashPassword, verifyPassword, randomToken, sha256, createSealer, createSigner };
+module.exports = { hashPassword, verifyPassword, randomToken, randomDigits, sha256, createSealer, createSigner };

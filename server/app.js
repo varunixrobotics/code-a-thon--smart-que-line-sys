@@ -11,7 +11,7 @@ const { createSealer, createSigner } = require('./lib/crypto');
 const { createServices } = require('./services');
 const { createAuth } = require('./middleware/auth');
 const { createHumanCheck } = require('./middleware/human');
-const { createSameOriginGuard, createLimiters, createAudit } = require('./middleware/security');
+const { createSameOriginGuard, createCorsGuard, createLimiters, createAudit } = require('./middleware/security');
 const { authRoutes } = require('./routes/auth');
 const { publicRoutes } = require('./routes/public');
 const { bookingRoutes } = require('./routes/bookings');
@@ -25,11 +25,11 @@ function securityHeaders(isProd) {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", `${GSI}client`],
+        scriptSrc: ["'self'", `${GSI}client`, 'https://cdn.jsdelivr.net'],
         styleSrc: ["'self'", 'https://fonts.googleapis.com', `${GSI}style`],
         fontSrc: ["'self'", 'https://fonts.gstatic.com'],
         imgSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'", GSI],
+        connectSrc: ["'self'", GSI, 'https://*.supabase.co', 'wss://*.supabase.co'],
         frameSrc: [GSI],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -40,7 +40,10 @@ function securityHeaders(isProd) {
     },
     // Google Identity Services opens a popup that must be able to post back.
     crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
-    strictTransportSecurity: isProd ? { maxAge: 31536000, includeSubDomains: true } : false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    xContentTypeOptions: true,
+    xFrameOptions: { action: 'deny' },
+    strictTransportSecurity: isProd ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,
   });
 }
 
@@ -71,8 +74,8 @@ function createApp({ db, config }) {
     minHoldMs: P.CHALLENGE_MIN_HOLD_MS,
   });
   const requireHuman = createHumanCheck({ db, gate, secure, passTtlMs: P.HUMAN_PASS_TTL_MS });
-  const limiters = createLimiters();
   const audit = createAudit(db);
+  const limiters = createLimiters(audit);
 
   app.disable('x-powered-by');
   app.set('trust proxy', config.TRUST_PROXY ? 1 : false);
@@ -81,6 +84,7 @@ function createApp({ db, config }) {
     res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=(), payment=()');
     next();
   });
+  app.use(createCorsGuard(config.PUBLIC_ORIGIN));
 
   const api = express.Router();
   api.use(limiters.api);
@@ -99,24 +103,29 @@ function createApp({ db, config }) {
     audit,
     sealer: createSealer(config.APP_SECRET),
     googleClientId: config.GOOGLE_CLIENT_ID,
+    supabaseUrl: config.SUPABASE_URL,
+    supabasePublishableKey: config.SUPABASE_PUBLISHABLE_KEY,
     isTest: Boolean(config.APP_SECRET && config.APP_SECRET.startsWith('test-secret-')),
   }));
-  api.use('/admin', adminRoutes({ db, services, auth, audit }));
+  api.use('/admin', adminRoutes({ db, services, auth, audit, limiters }));
   api.use(publicRoutes({ 
     services, 
     events, 
     googleClientId: config.GOOGLE_CLIENT_ID, 
-    supabaseUrl: config.SUPABASE_URL,
-    supabasePublishableKey: config.SUPABASE_PUBLISHABLE_KEY,
+    supabaseUrl: config.SUPABASE_URL || process.env.SUPABASE_URL,
+    supabasePublishableKey: config.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY,
     demoMode: config.DEMO_MODE 
   }));
   api.use(bookingRoutes({ services, auth, requireHuman, limiters, audit }));
   api.use((_req, res) => res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } }));
   app.use('/api', api);
+  // Also mount directly to support serverless environments where /api is stripped by routing
+  app.use(api);
 
-  app.use('/vendor/lenis', express.static(path.join(ROOT, 'node_modules', 'lenis', 'dist'), { maxAge: '7d' }));
+  const staticOpts = { extensions: ['html'], maxAge: config.IS_PROD ? '1h' : 0, dotfiles: 'deny', index: ['index.html'] };
+  app.use('/vendor/lenis', express.static(path.join(ROOT, 'node_modules', 'lenis', 'dist'), { maxAge: '7d', dotfiles: 'deny' }));
   app.get('/shared/botScore.js', (_req, res) => res.sendFile(path.join(__dirname, 'lib', 'botScore.js')));
-  app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: config.IS_PROD ? '1h' : 0 }));
+  app.use(express.static(path.join(ROOT, 'public'), staticOpts));
   app.use((_req, res) => res.status(404).sendFile(path.join(ROOT, 'public', '404.html')));
   app.use(errorHandler);
 

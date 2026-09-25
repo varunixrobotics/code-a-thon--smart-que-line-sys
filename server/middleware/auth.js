@@ -28,6 +28,7 @@ function cookieString(name, value, { maxAgeSec, secure }) {
     'HttpOnly',
     'SameSite=Strict',
     `Max-Age=${maxAgeSec}`,
+    maxAgeSec === 0 ? 'Expires=Thu, 01 Jan 1970 00:00:00 GMT' : null,
     secure ? 'Secure' : null,
   ].filter(Boolean).join('; ');
 }

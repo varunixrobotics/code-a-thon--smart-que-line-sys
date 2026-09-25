@@ -7,7 +7,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { stmt } = require('../db');
 const { errors } = require('../errors');
 const { z, parse, ok } = require('../lib/validate');
-const { hashPassword, verifyPassword } = require('../lib/crypto');
+const { hashPassword, verifyPassword, randomDigits } = require('../lib/crypto');
 const { maskEmail } = require('../services/statsService');
 
 const TOTP_PARAMS = Object.freeze({ algorithm: 'SHA1', digits: 6, period: 30 });
@@ -20,11 +20,30 @@ const registerSchema = z.object({
   name: z.string().trim().min(2, 'Name is too short.').max(60),
   email,
   password,
-});
-const loginSchema = z.object({ email, password: z.string().min(1).max(128) });
-const googleSchema = z.object({ credential: z.string().min(20).max(4096) });
-const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit verification code.') });
-const supabaseSchema = z.object({ accessToken: z.string().min(1) });
+  website: z.string().optional(),
+  human: z.unknown().optional(),
+  challenge: z.unknown().optional(),
+}).strict();
+const loginSchema = z.object({
+  email,
+  password: z.string().min(1).max(128),
+  website: z.string().optional(),
+  human: z.unknown().optional(),
+  challenge: z.unknown().optional(),
+}).strict();
+const googleSchema = z.object({
+  credential: z.string().min(20).max(4096),
+  website: z.string().optional(),
+  human: z.unknown().optional(),
+  challenge: z.unknown().optional(),
+}).strict();
+const codeSchema = z.object({ code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit verification code.') }).strict();
+const supabaseSchema = z.object({
+  accessToken: z.string().min(1),
+  website: z.string().optional(),
+  human: z.unknown().optional(),
+  challenge: z.unknown().optional(),
+}).strict();
 
 const TRUSTED_DOMAINS = new Set([
   'gmail.com',
@@ -47,20 +66,18 @@ function isTrustedEmail(em, allowTest = false) {
   return false;
 }
 
-// In-memory OTP storage for email verification: userId -> { otp, email, expiresAt, attempts }
+// In-memory OTP storage for email verification: userId -> { otp, email, expiresAt, attempts, lastSentAt }
 const emailOtps = new Map();
 
 function generateAndStoreOtp(userId, userEmail) {
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const otp = randomDigits(6);
   emailOtps.set(userId, {
     otp,
     email: userEmail,
     expiresAt: Date.now() + 10 * 60 * 1000,
     attempts: 0,
+    lastSentAt: Date.now(),
   });
-  console.log(`\n========================================`);
-  console.log(`📧 [SmartQueue OTP] Verification code for ${userEmail}: ${otp}`);
-  console.log(`========================================\n`);
   return otp;
 }
 
@@ -71,7 +88,7 @@ function nextStep(user, viaGoogle) {
   return 'done';
 }
 
-function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleClientId, isTest = false }) {
+function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleClientId, supabaseUrl, supabasePublishableKey, isTest = false }) {
   const r = express.Router();
   const { verifyCredentials, EnvError } = require('@supabase/server/core');
   const q = (sql) => stmt(db, sql);
@@ -102,13 +119,12 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
       return begin(req, res, user, false);
     }
 
-    const otp = generateAndStoreOtp(user.id, user.email);
+    generateAndStoreOtp(user.id, user.email);
     auth.startSession(req, res, user.id, false, Date.now());
     res.json(ok({
       next: 'otp',
-      email: user.email,
-      otp,
-      message: `A 6-digit verification code has been sent to ${user.email}.`
+      email: maskEmail(user.email),
+      message: 'A 6-digit verification code has been sent to your email.'
     }));
   });
 
@@ -118,13 +134,9 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
       throw errors.badRequest('Only trusted email accounts (such as @gmail.com, @outlook.com, @yahoo.com, @icloud.com) are accepted.');
     }
     const user = q('SELECT * FROM users WHERE email=?').get(rawEmail);
-    if (!user || user.role === 'system') {
-      throw errors.unauthorized('Invalid email or password.', 'BAD_CREDENTIALS');
-    }
-    if (!user.password_hash) {
-      if (user.google_sub) {
-        throw errors.badRequest('This account uses Google Sign-in. Please sign in with Google.');
-      }
+    if (!user || user.role === 'system' || !user.password_hash) {
+      await verifyPassword(rawPassword, null); // Constant-time execution against account enumeration
+      audit(req, 'login_failed', maskEmail(rawEmail), user?.id ?? null);
       throw errors.unauthorized('Invalid email or password.', 'BAD_CREDENTIALS');
     }
 
@@ -139,14 +151,13 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
       return begin(req, res, user, false);
     }
 
-    const otp = generateAndStoreOtp(user.id, user.email);
+    generateAndStoreOtp(user.id, user.email);
     auth.startSession(req, res, user.id, false, Date.now());
     audit(req, 'login_email_otp_sent', null, user.id);
     res.json(ok({
       next: 'otp',
-      email: user.email,
-      otp,
-      message: `A 6-digit verification code has been sent to ${user.email}.`
+      email: maskEmail(user.email),
+      message: 'A 6-digit verification code has been sent to your email.'
     }));
   });
 
@@ -182,34 +193,71 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
   r.post('/supabase', limiters.auth, requireHuman('login'), async (req, res) => {
     const { accessToken } = parse(supabaseSchema, req.body);
     
-    let authResult;
+    let claims = null;
+
+    // 1. Try cryptographic JWKS verification via @supabase/server/core
     try {
       const result = await verifyCredentials({ token: accessToken, apikey: null }, { auth: 'user' });
-      if (result.error) throw result.error;
-      authResult = result.data;
-    } catch (err) {
-      if (err instanceof EnvError) throw errors.notFound('Supabase auth is not configured on this server.');
-      throw errors.unauthorized('Invalid Supabase token.', 'BAD_TOKEN');
+      if (!result.error && result.data?.userClaims) {
+        claims = result.data.userClaims;
+      }
+    } catch {
+      // Proceed to fallback
     }
-    
-    if (!authResult?.userClaims?.email) throw errors.unauthorized('Your Supabase account lacks an email.');
 
-    const email = authResult.userClaims.email.toLowerCase();
+    // 2. Fallback to Supabase GoTrue REST API user verification
+    const activeUrl = supabaseUrl || process.env.SUPABASE_URL;
+    const activeKey = supabasePublishableKey || process.env.SUPABASE_PUBLISHABLE_KEY;
+    if (!claims && activeUrl) {
+      try {
+        const checkRes = await fetch(`${activeUrl.replace(/\/$/, '')}/auth/v1/user`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            apikey: activeKey || '',
+          },
+        });
+        if (checkRes.ok) {
+          const u = await checkRes.json();
+          if (u?.id && u?.email) {
+            claims = {
+              sub: u.id,
+              email: u.email,
+              email_confirmed_at: u.email_confirmed_at,
+              user_metadata: u.user_metadata || {},
+            };
+          }
+        }
+      } catch (err) {
+        console.error('[supabase /auth/v1/user fallback check error]', err);
+      }
+    }
+
+    if (!claims?.email) {
+      throw errors.unauthorized('Invalid Supabase authentication token.', 'BAD_TOKEN');
+    }
+
+    const isEmailVerified = claims.email_confirmed_at != null
+      || claims.email_verified === true
+      || claims.user_metadata?.email_verified === true;
+    if (!isEmailVerified && !isTest) {
+      throw errors.unauthorized('Please verify your email address with Supabase before signing in.', 'UNVERIFIED_EMAIL');
+    }
+
+    const email = claims.email.toLowerCase();
     let user = q('SELECT * FROM users WHERE email=?').get(email);
     if (user?.role === 'system') throw errors.forbidden();
     if (!user) {
-      // Create local user mapping
-      const name = (authResult.userClaims.user_metadata?.full_name || email.split('@')[0]).slice(0, 60);
+      // Create local user mapping with safe name truncation
+      const name = (claims.user_metadata?.full_name || claims.user_metadata?.name || email.split('@')[0]).slice(0, 60);
       const id = q('INSERT INTO users (email, name, created_at) VALUES (?,?,?)')
         .run(email, name, Date.now()).lastInsertRowid;
       user = getUser(Number(id));
       audit(req, 'register_supabase', maskEmail(email), user.id);
     }
     
-    // Create full authenticated session without 2FA (Supabase handled it)
+    // Enforce role-based MFA checks: staff, admins, and TOTP users MUST complete TOTP verification!
     audit(req, 'login_supabase', null, user.id);
-    auth.startSession(req, res, user.id, true, Date.now());
-    res.json(ok({ next: 'done', user: auth.publicUser(getUser(user.id), true) }));
+    begin(req, res, getUser(user.id), true);
   });
 
   r.post('/totp/setup', limiters.totp, auth.requirePending, async (req, res) => {
@@ -271,12 +319,16 @@ function authRoutes({ db, auth, requireHuman, limiters, audit, sealer, googleCli
   r.post('/otp/verify', limiters.totp, auth.requirePending, verifyCodeHandler);
   r.post('/totp/verify', limiters.totp, auth.requirePending, verifyCodeHandler);
 
-  r.post('/otp/resend', limiters.totp, auth.requirePending, (req, res) => {
+  r.post('/otp/resend', limiters.otpResend || limiters.totp, auth.requirePending, (req, res) => {
     const user = getUser(req.auth.user.id);
-    const otp = generateAndStoreOtp(user.id, user.email);
+    const existing = emailOtps.get(user.id);
+    if (existing && Date.now() - (existing.lastSentAt || 0) < 45_000) {
+      throw errors.tooManyRequests('Please wait 45 seconds before requesting another code.');
+    }
+    generateAndStoreOtp(user.id, user.email);
+    audit(req, 'otp_resend', null, user.id);
     res.json(ok({
-      otp,
-      message: `A new 6-digit verification code has been sent to ${user.email}.`
+      message: 'A new 6-digit verification code has been sent to your email.'
     }));
   });
 

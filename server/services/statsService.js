@@ -7,9 +7,12 @@ const { stmt } = require('../db');
 const toMin = (ms) => (ms === null || ms === undefined ? null : Math.round((ms / 60_000) * 10) / 10);
 
 function maskEmail(email) {
-  const [local, domain] = String(email).split('@');
-  if (!domain) return '***';
-  return `${local.slice(0, 2)}***@${domain}`;
+  if (!email || typeof email !== 'string') return '***';
+  const parts = email.trim().toLowerCase().split('@');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return '***';
+  const [local, domain] = parts;
+  const visible = local.length > 2 ? local.slice(0, 2) : local.slice(0, 1);
+  return `${visible}***@${domain}`;
 }
 
 function isOpenNow(org, now) {

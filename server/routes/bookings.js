@@ -3,17 +3,23 @@
 const express = require('express');
 const { z, parse, id, ok } = require('../lib/validate');
 
+const humanFields = {
+  website: z.string().optional(),
+  human: z.unknown().optional(),
+  challenge: z.unknown().optional(),
+};
+
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.');
 const createSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('walkin'), serviceId: id }),
-  z.object({ kind: z.literal('appointment'), serviceId: id, date: dateStr, slotIndex: z.number().int().min(0).max(1440) }),
+  z.object({ kind: z.literal('walkin'), serviceId: id, ...humanFields }).strict(),
+  z.object({ kind: z.literal('appointment'), serviceId: id, date: dateStr, slotIndex: z.number().int().min(0).max(1440), ...humanFields }).strict(),
 ]);
-const rescheduleSchema = z.object({ date: dateStr, slotIndex: z.number().int().min(0).max(1440) });
+const rescheduleSchema = z.object({ date: dateStr, slotIndex: z.number().int().min(0).max(1440), ...humanFields }).strict();
 const locationSchema = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   accuracy: z.number().min(0).max(100_000),
-});
+}).strict();
 
 function bookingRoutes({ services, auth, requireHuman, limiters, audit }) {
   const r = express.Router();

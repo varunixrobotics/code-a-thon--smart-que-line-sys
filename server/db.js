@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_seat
   ON bookings(service_id, date, slot_index, seat)
   WHERE status NOT IN ('cancelled','no_show');
+CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_user_org_live
+  ON bookings(user_id, org_id)
+  WHERE status IN ('booked','checked_in','called');
 CREATE INDEX IF NOT EXISTS ix_bookings_day ON bookings(org_id, date, status);
 CREATE INDEX IF NOT EXISTS ix_bookings_user ON bookings(user_id, status);
 
@@ -140,6 +143,7 @@ function openDb(file) {
 function migrate(db) {
   const userCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
   if (!userCols.has('org_id')) db.exec('ALTER TABLE users ADD COLUMN org_id INTEGER');
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_user_org_live ON bookings(user_id, org_id) WHERE status IN ('booked','checked_in','called')");
 }
 
 const stmtCache = new WeakMap();

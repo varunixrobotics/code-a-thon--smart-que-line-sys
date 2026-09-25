@@ -5,22 +5,23 @@ const { stmt } = require('../db');
 const { errors } = require('../errors');
 const { z, parse, id, ok } = require('../lib/validate');
 
-const ACTIONS = Object.freeze({
+const ACTIONS = Object.freeze(Object.assign(Object.create(null), {
   call: 'callNext',
   complete: 'complete',
   'no-show': 'noShow',
   recall: 'recall',
-});
+}));
 
-const statusSchema = z.object({ status: z.enum(['open', 'paused', 'closed']) });
+const statusSchema = z.object({ status: z.enum(['open', 'paused', 'closed']) }).strict();
 const settingsSchema = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   radiusM: z.number().int().min(30).max(2000),
-});
+}).strict();
 
-function adminRoutes({ db, services, auth, audit }) {
+function adminRoutes({ db, services, auth, audit, limiters }) {
   const r = express.Router();
+  if (limiters?.admin) r.use(limiters.admin);
   const staff = auth.requireRole('staff', 'admin');
   const admin = auth.requireRole('admin');
 
@@ -29,7 +30,10 @@ function adminRoutes({ db, services, auth, audit }) {
     const orgId = parse(id, req.params.orgId);
     if (!stmt(db, 'SELECT 1 AS x FROM organizations WHERE id=?').get(orgId)) throw errors.notFound('Organisation not found.');
     const { role, org_id: staffOrg } = req.auth.user;
-    if (role !== 'admin' && staffOrg !== orgId) throw errors.forbidden('You can only manage your own service centre.');
+    if (role !== 'admin' && staffOrg !== orgId) {
+      audit(req, 'forbidden_org_access', `user ${req.auth.user.id} tried accessing org ${orgId}`);
+      throw errors.forbidden('You can only manage your own service centre.');
+    }
     return orgId;
   }
 
@@ -46,8 +50,8 @@ function adminRoutes({ db, services, auth, audit }) {
   r.post('/orgs/:orgId/counters/:counterId/:action', staff, (req, res) => {
     const orgId = orgIdFrom(req);
     const counterId = parse(id, req.params.counterId);
+    if (!Object.hasOwn(ACTIONS, req.params.action)) throw errors.notFound('Unknown counter action.');
     const method = ACTIONS[req.params.action];
-    if (!method) throw errors.notFound('Unknown counter action.');
     const result = services.counters[method]({ orgId, counterId, now: Date.now() });
     audit(req, `counter_${req.params.action}`, `org ${orgId} counter ${counterId} ${result?.tokenCode || 'none'}`);
     res.json(ok({ result }));
@@ -86,11 +90,19 @@ function adminRoutes({ db, services, auth, audit }) {
   });
 
   r.post('/monitor/run', admin, (req, res) => {
+    audit(req, 'admin_monitor_run', null);
     res.json(ok(services.presence.runMonitor(Date.now())));
   });
 
-  r.get('/risk', admin, (_req, res) => res.json(ok({ events: services.stats.riskEvents() })));
-  r.get('/audit', admin, (_req, res) => res.json(ok({ entries: services.stats.auditLog() })));
+  r.get('/risk', admin, (req, res) => {
+    audit(req, 'admin_view_risk', null);
+    res.json(ok({ events: services.stats.riskEvents() }));
+  });
+
+  r.get('/audit', admin, (req, res) => {
+    audit(req, 'admin_view_audit', null);
+    res.json(ok({ entries: services.stats.auditLog() }));
+  });
 
   return r;
 }
