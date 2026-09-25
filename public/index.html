@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>SmartQueue — Skip the Queue. Not the Service.</title>
   <meta name="description" content="Digital tokens, appointments and live queues for government offices, hospitals, banks and corporate desks.">
-  <meta name="color-scheme" content="light dark">
   <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
   <script src="/js/theme-boot.js"></script>
+  <script>
+    if (window.location.search.includes('code=') || window.location.search.includes('error=') || window.location.hash.includes('access_token=')) {
+      window.location.replace('/login.html' + window.location.search + window.location.hash);
+    }
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap">

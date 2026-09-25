@@ -278,7 +278,7 @@ async function initGoogle(clientId) {
         const { error } = await window.supabaseClient.auth.signInWithOAuth({
           provider: 'google',
           options: {
-            redirectTo: window.location.origin + '/login.html' + (params.get('next') ? `?next=${encodeURIComponent(params.get('next'))}` : ''),
+            redirectTo: window.location.origin + '/login.html',
             queryParams: { access_type: 'offline', prompt: 'select_account' },
           },
         });
@@ -390,26 +390,24 @@ async function boot() {
     }
   });
 
-  // Surface any OAuth redirect errors from Google / Supabase
-  const urlSearch = new URLSearchParams(window.location.search);
-  const hashSearch = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  const oauthErr = urlSearch.get('error_description') || urlSearch.get('error') || hashSearch.get('error_description') || hashSearch.get('error');
-  if (oauthErr) {
-    const cleanErr = decodeURIComponent(oauthErr.replace(/\+/g, ' '));
-    toast('Google sign-in notice: ' + cleanErr, { type: 'danger', timeout: 12000 });
-  }
-
-  const hasOAuthCallback = window.location.hash.includes('access_token') || window.location.search.includes('code=');
-  if (hasOAuthCallback) {
-    setBusy($('[data-form="login"] button[type="submit"]') || document.body, true, 'Signing you in…');
-  }
-
   try {
     const me = await api('/api/auth/me');
     if (me.user?.verified) return finish(me.user);
     if (me.pending) await handleNext({ next: me.pending });
   } catch {
     // not signed in — stay on credentials
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const oauthError = searchParams.get('error_description')
+    || searchParams.get('error')
+    || hashParams.get('error_description')
+    || hashParams.get('error');
+
+  if (oauthError) {
+    console.error('[oauth error in url]', oauthError);
+    toast('Authentication error', { body: decodeURIComponent(oauthError.replace(/\+/g, ' ')), type: 'danger', timeout: 10000 });
   }
 
   let config = null;
@@ -429,18 +427,24 @@ async function boot() {
 
   if (supabaseUrl && supabaseAnonKey && window.supabase) {
     try {
-      window.supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+      window.supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          flowType: 'pkce',
+          detectSessionInUrl: true,
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      });
 
       let syncing = false;
       async function syncSupabaseUser(session) {
         if (!session?.access_token || syncing) return;
         syncing = true;
-        setBusy($('[data-form="login"] button[type="submit"]') || document.body, true, 'Signing you in…');
         try {
-          const res = await post('/api/auth/supabase', { accessToken: session.access_token });
+          toast('Finalizing sign-in…', { type: 'info', timeout: 3000 });
+          const res = await post('/api/auth/supabase', { accessToken: session.access_token }, { human: true });
           if (window.history?.replaceState) {
-            const nextQuery = urlSearch.get('next') ? `?next=${encodeURIComponent(urlSearch.get('next'))}` : '';
-            window.history.replaceState(null, '', window.location.pathname + nextQuery);
+            window.history.replaceState(null, '', window.location.pathname);
           }
           await handleNext(res);
         } catch (err) {
@@ -448,16 +452,42 @@ async function boot() {
           toast('Supabase sign-in sync error', { body: err.message, type: 'danger' });
         } finally {
           syncing = false;
-          setBusy($('[data-form="login"] button[type="submit"]') || document.body, false);
         }
       }
 
+      // 1. If returning from OAuth with a PKCE authorization code in query params:
+      const authCode = searchParams.get('code');
+      if (authCode) {
+        toast('Completing Google sign-in…', { type: 'info', timeout: 5000 });
+        try {
+          const { data, error } = await window.supabaseClient.auth.exchangeCodeForSession(authCode);
+          if (error) {
+            console.warn('[exchangeCodeForSession error]', error);
+            toast('Google sign-in error', { body: error.message, type: 'danger' });
+          } else if (data?.session?.access_token) {
+            await syncSupabaseUser(data.session);
+            return;
+          }
+        } catch (err) {
+          console.error('[exchangeCodeForSession exception]', err);
+        }
+      }
+
+      // 2. If returning from OAuth with access token in URL hash:
+      const hashToken = hashParams.get('access_token');
+      if (hashToken) {
+        await syncSupabaseUser({ access_token: hashToken });
+        return;
+      }
+
+      // 3. Listen for auth state changes
       window.supabaseClient.auth.onAuthStateChange(async (event, session) => {
-        if (session?.access_token) {
+        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.access_token) {
           await syncSupabaseUser(session);
         }
       });
 
+      // 4. Check for existing active session
       const { data: { session } } = await window.supabaseClient.auth.getSession();
       if (session?.access_token) {
         await syncSupabaseUser(session);

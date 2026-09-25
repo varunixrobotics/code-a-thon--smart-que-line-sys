@@ -33,6 +33,15 @@ function cookieString(name, value, { maxAgeSec, secure }) {
   ].filter(Boolean).join('; ');
 }
 
+function isRequestHttps(req, secure) {
+  if (req.secure) return true;
+  const proto = (req.headers && (req.headers['x-forwarded-proto'] || '')) || '';
+  if (proto.split(',')[0].trim() === 'https') return true;
+  const host = (req.headers && req.headers.host) || '';
+  if (host.includes('localhost') || host.includes('127.0.0.1')) return false;
+  return Boolean(secure);
+}
+
 /**
  * Server-side sessions with cryptographic signed fallback for serverless.
  * Sessions store a SHA-256 hash in DB and HMAC signature in the cookie so
@@ -121,7 +130,7 @@ function createAuth({ db, secure, appSecret }) {
       }
     }
 
-    const isHttps = Boolean(secure && (req.secure || req.headers?.['x-forwarded-proto'] === 'https'));
+    const isHttps = isRequestHttps(req, secure);
     const maxAgeSec = Math.floor(P.SESSION_TTL_MS / 1000);
     res.append('Set-Cookie', cookieString('sq_sid', cookieVal, { maxAgeSec, secure: isHttps }));
     if (isHttps) {
@@ -131,7 +140,7 @@ function createAuth({ db, secure, appSecret }) {
 
   function endSession(req, res) {
     if (req.auth) q('DELETE FROM sessions WHERE id_hash=?').run(req.auth.sidHash);
-    const isHttps = Boolean(secure && (req.secure || req.headers?.['x-forwarded-proto'] === 'https'));
+    const isHttps = isRequestHttps(req, secure);
     res.append('Set-Cookie', cookieString('sq_sid', '', { maxAgeSec: 0, secure: isHttps }));
     res.append('Set-Cookie', cookieString('__Host-sq_sid', '', { maxAgeSec: 0, secure: isHttps }));
   }
