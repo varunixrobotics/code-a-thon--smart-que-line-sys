@@ -56,9 +56,11 @@ function getApp(req) {
 }
 
 module.exports = (req, res) => {
-  // Strip the /api prefix that Vercel routes prepend so Express sees /auth/..., /config, etc.
+  // Ensure the request URL starts with /api so Express routes it to the /api router
   const originalUrl = req.url || '/';
-  req.url = originalUrl.replace(/^\/api/, '') || '/';
+  if (!originalUrl.startsWith('/api')) {
+    req.url = '/api' + (originalUrl.startsWith('/') ? originalUrl : '/' + originalUrl);
+  }
 
   try {
     const app = getApp(req);

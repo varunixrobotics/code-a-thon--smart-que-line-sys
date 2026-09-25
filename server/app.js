@@ -129,8 +129,6 @@ function createApp({ db, config }) {
   api.use(bookingRoutes({ services, auth, requireHuman, limiters, audit }));
   api.use((_req, res) => res.status(404).json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } }));
   app.use('/api', api);
-  // Also mount at root: Vercel strips /api prefix, so the handler gets /auth/..., /config, etc.
-  app.use('/', api);
 
   const staticOpts = { extensions: ['html'], maxAge: config.IS_PROD ? '1h' : 0, dotfiles: 'deny', index: ['index.html'] };
   app.use('/vendor/lenis', express.static(path.join(ROOT, 'node_modules', 'lenis', 'dist'), { maxAge: '7d', dotfiles: 'deny' }));
